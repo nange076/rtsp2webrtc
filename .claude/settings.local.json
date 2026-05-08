@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 extract_docs.py)",
+      "Bash(cargo check *)",
+      "Bash(rustup show *)",
+      "Bash(rustup target *)",
+      "Bash(rustc --version)",
+      "Bash(where link *)",
+      "Bash(dir \"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2022\\\\BuildTools\\\\VC\\\\Tools\\\\MSVC\\\\*\\\\bin\\\\Hostx64\\\\x64\\\\link.exe\")",
+      "Bash(dir \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\BuildTools\\\\VC\\\\Tools\\\\MSVC\\\\*\\\\bin\\\\Hostx64\\\\x64\\\\link.exe\")",
+      "Bash(where vcvars64 *)",
+      "Bash(where vsdevcmd *)",
+      "Bash(rustup toolchain *)",
+      "Bash(rustup default *)",
+      "Read(//mingw64/bin/**)",
+      "Bash(choco install *)",
+      "Bash(export PATH=\"/c/ProgramData/mingw64/mingw64/bin:$PATH\")",
+      "Bash(ffmpeg -version)",
+      "Bash(ffmpeg -formats)",
+      "Bash(ffmpeg -y -re -f lavfi -i \"testsrc=size=1280x720:rate=30\" -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -profile:v baseline -f rtsp -rtsp_transport tcp \"rtsp://0.0.0.0:8554/stream\")",
+      "Bash(timeout 5 ffprobe -i rtsp://localhost:8554/stream)",
+      "Bash(kill -9 1645)",
+      "Bash(taskkill /F /PID 1645)",
+      "Bash(ffmpeg -y -re -f lavfi -i testsrc=size=1280x720:rate=30 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -profile:v baseline -f rtsp -rtsp_flags listen -rtsp_transport tcp rtsp://0.0.0.0:8554/stream)",
+      "Bash(timeout 10 ffprobe -rtsp_transport tcp -i rtsp://localhost:8554/stream)",
+      "Bash(pkill ffmpeg *)",
+      "Bash(curl -L -o /tmp/mediamtx.zip \"https://github.com/bluenviron/mediamtx/releases/download/v1.11.3/mediamtx_v1.11.3_windows_amd64.zip\")",
+      "Bash(cargo build *)",
+      "Bash(cargo run *)"
+    ]
+  }
+}

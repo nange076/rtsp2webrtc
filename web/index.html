@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RTSP2WebRTC Test Client</title>
+<style>
+  body { font-family: system-ui; max-width: 960px; margin: 0 auto; padding: 20px; background: #111; color: #eee; }
+  video { width: 100%; max-width: 960px; background: #000; border-radius: 8px; }
+  button { padding: 12px 24px; font-size: 16px; cursor: pointer; border: none; border-radius: 6px; }
+  .connect { background: #4caf50; color: white; }
+  .disconnect { background: #f44336; color: white; }
+  #status { margin: 12px 0; padding: 8px 12px; border-radius: 4px; font-family: monospace; }
+  .info { background: #1a3a5c; }
+  .ok { background: #1a4a1a; }
+  .err { background: #4a1a1a; }
+</style>
+</head>
+<body>
+<h1>RTSP → WebRTC Gateway</h1>
+
+<div>
+  <label>Gateway URL:</label>
+  <input id="gateway" value="ws://localhost:3000/ws" style="width:300px;padding:4px">
+  <button class="connect" onclick="connect()">Connect</button>
+  <button class="disconnect" onclick="disconnect()">Disconnect</button>
+</div>
+
+<pre id="status" class="info">Not connected</pre>
+<video id="video" autoplay playsinline muted></video>
+
+<script>
+let pc, ws;
+
+function log(msg, cls) {
+  const s = document.getElementById('status');
+  s.textContent += '\n' + new Date().toLocaleTimeString() + '  ' + msg;
+  s.className = cls || 'info';
+}
+
+async function connect() {
+  log('Connecting to signaling...', 'info');
+
+  ws = new WebSocket(document.getElementById('gateway').value);
+
+  ws.onopen = () => {
+    log('WebSocket connected, requesting stream', 'ok');
+    ws.send(JSON.stringify({ type: 'request_stream' }));
+  };
+
+  ws.onmessage = async (event) => {
+    const msg = JSON.parse(event.data);
+    log('← ' + msg.type, 'info');
+
+    switch (msg.type) {
+      case 'connected':
+        log('Stream ready, creating peer connection', 'ok');
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        pc.ontrack = (event) => {
+          log('Remote track received: ' + event.track.kind, 'ok');
+          document.getElementById('video').srcObject = event.streams[0];
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            const c = event.candidate;
+            ws.send(JSON.stringify({
+              type: 'ice_candidate',
+              candidate: c.candidate,
+              sdpMid: c.sdpMid
+            }));
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          log('Connection state: ' + pc.connectionState, 'info');
+        };
+        break;
+
+      case 'sdp_offer':
+        log('Received SDP offer', 'ok');
+        await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'sdp_answer', sdp: answer.sdp }));
+        log('SDP answer sent', 'ok');
+        break;
+
+      case 'ice_candidate':
+        if (msg.candidate && msg.candidate.candidate) {
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch (e) {
+            log('ICE error: ' + e, 'err');
+          }
+        }
+        break;
+
+      case 'error':
+        log('Server error: ' + msg.message, 'err');
+        break;
+    }
+  };
+
+  ws.onerror = () => log('WebSocket error', 'err');
+  ws.onclose = () => log('WebSocket closed', 'info');
+}
+
+function disconnect() {
+  if (pc) { pc.close(); pc = null; }
+  if (ws) { ws.close(); ws = null; }
+  document.getElementById('video').srcObject = null;
+  log('Disconnected', 'info');
+}
+</script>
+</body>
+</html>
