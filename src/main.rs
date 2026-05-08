@@ -42,7 +42,7 @@ async fn main() -> AppResult<()> {
 
     // ── logging setup ──
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "rtsp2webrtc=info".into());
+        .unwrap_or_else(|_| format!("{}=info", env!("CARGO_PKG_NAME")).into());
 
     match config.logging.format.as_str() {
         "json" => {

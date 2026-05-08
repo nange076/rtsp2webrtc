@@ -21,6 +21,7 @@ allowed_origins = ["*"]
 # "text" or "json"
 format = "text"
 
+# To enable TLS, uncomment the section below:
 # [tls]
 # cert = "/path/to/cert.pem"
 # key = "/path/to/key.pem"
