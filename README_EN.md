@@ -18,6 +18,61 @@ Low-latency RTSP-to-WebRTC streaming gateway. Relays IP camera RTSP streams to b
 
 ---
 
+## Build
+
+### Linux
+
+```bash
+# Prerequisites: Rust + GCC
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+sudo apt install build-essential    # Debian/Ubuntu
+# or: sudo dnf install gcc          # Fedora
+# or: sudo pacman -S gcc            # Arch
+
+# Build
+git clone <repo-url> && cd rtsp2webRTC
+cargo build --release
+```
+
+### Windows (MSVC)
+
+```powershell
+# Prerequisites: Rust + Visual Studio Build Tools
+# 1. Install Rust: https://rustup.rs (choose msvc toolchain)
+# 2. Install VS Build Tools: https://visualstudio.microsoft.com/downloads/
+#    Select "Desktop development with C++" workload
+
+# Build
+git clone <repo-url> && cd rtsp2webRTC
+cargo build --release
+```
+
+### Windows (GNU)
+
+```bash
+# Prerequisites: Rust (gnu toolchain) + MinGW-w64
+rustup default stable-x86_64-pc-windows-gnu
+# Install MinGW-w64 via Chocolatey:
+choco install mingw -y
+# Or download: https://www.mingw-w64.org
+
+# Add MinGW to PATH, then build
+export PATH="/c/ProgramData/mingw64/mingw64/bin:$PATH"
+cargo build --release
+```
+
+> **Note:** The `ring` crate (used by webrtc-rs for DTLS) requires a C compiler. On Linux this is GCC; on Windows use either MSVC toolchain or GNU + MinGW-w64.
+
+### Cross-compile (Linux → Windows)
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+sudo apt install mingw-w64
+cargo build --release --target x86_64-pc-windows-gnu
+```
+
+---
+
 ## Quick Start
 
 ### 1. Configuration

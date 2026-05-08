@@ -18,6 +18,61 @@
 
 ---
 
+## 编译
+
+### Linux
+
+```bash
+# 依赖：Rust + GCC
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+sudo apt install build-essential    # Debian/Ubuntu
+# 或: sudo dnf install gcc          # Fedora
+# 或: sudo pacman -S gcc            # Arch
+
+# 编译
+git clone <repo-url> && cd rtsp2webRTC
+cargo build --release
+```
+
+### Windows (MSVC)
+
+```powershell
+# 依赖：Rust + Visual Studio Build Tools
+# 1. 安装 Rust：https://rustup.rs（选择 msvc 工具链）
+# 2. 安装 VS Build Tools：https://visualstudio.microsoft.com/downloads/
+#    勾选"使用 C++ 的桌面开发"工作负载
+
+# 编译
+git clone <repo-url> && cd rtsp2webRTC
+cargo build --release
+```
+
+### Windows (GNU)
+
+```bash
+# 依赖：Rust（gnu 工具链）+ MinGW-w64
+rustup default stable-x86_64-pc-windows-gnu
+# 通过 Chocolatey 安装 MinGW-w64：
+choco install mingw -y
+# 或手动下载：https://www.mingw-w64.org
+
+# 将 MinGW 加入 PATH，然后编译
+export PATH="/c/ProgramData/mingw64/mingw64/bin:$PATH"
+cargo build --release
+```
+
+> **说明：** `ring` crate（webrtc-rs 的 DTLS 依赖）需要 C 编译器。Linux 下用 GCC，Windows 下用 MSVC 工具链或 GNU + MinGW-w64。
+
+### 交叉编译（Linux → Windows）
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+sudo apt install mingw-w64
+cargo build --release --target x86_64-pc-windows-gnu
+```
+
+---
+
 ## 快速开始
 
 ### 1. 配置文件
