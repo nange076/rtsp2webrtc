@@ -1,119 +1,147 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RTSP2WebRTC Test Client</title>
+<title>RTSP2WebRTC</title>
 <style>
-  body { font-family: system-ui; max-width: 960px; margin: 0 auto; padding: 20px; background: #111; color: #eee; }
-  video { width: 100%; max-width: 960px; background: #000; border-radius: 8px; }
-  button { padding: 12px 24px; font-size: 16px; cursor: pointer; border: none; border-radius: 6px; }
-  .connect { background: #4caf50; color: white; }
-  .disconnect { background: #f44336; color: white; }
-  #status { margin: 12px 0; padding: 8px 12px; border-radius: 4px; font-family: monospace; }
-  .info { background: #1a3a5c; }
-  .ok { background: #1a4a1a; }
-  .err { background: #4a1a1a; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui; background: #111; color: #eee; padding: 20px; }
+  h2 { margin: 16px 0 8px; font-size: 16px; color: #888; }
+  .panel { max-width: 960px; margin: 0 auto; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+  input { flex: 1; padding: 8px 12px; border: 1px solid #444; border-radius: 6px; background: #222; color: #eee; font-size: 14px; }
+  button { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .btn-go { background: #4caf50; color: white; }
+  .btn-red { background: #f44336; color: white; }
+  .btn-blue { background: #2196f3; color: white; }
+  video { width: 100%; max-width: 960px; background: #000; border-radius: 8px; margin-top: 12px; }
+  #log { margin: 8px 0; padding: 10px 14px; border-radius: 6px; font-family: monospace; font-size: 13px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: #1a1a2e; }
+  .log-ok { color: #4caf50; } .log-err { color: #f44336; } .log-dim { color: #888; }
+  hr { border: none; border-top: 1px solid #333; margin: 20px 0; }
+  .stream-item { display: flex; gap: 8px; align-items: center; padding: 8px; background: #1a1a2e; border-radius: 6px; margin: 4px 0; }
+  .stream-item span { flex: 1; font-size: 13px; }
 </style>
 </head>
 <body>
-<h1>RTSP → WebRTC Gateway</h1>
+<div class="panel">
 
-<div>
-  <label>Gateway:</label>
-  <input id="gateway" value="ws://localhost:3000/ws?stream=camera-1" style="width:340px;padding:4px">
-  <button class="connect" onclick="connect()">Connect</button>
-  <button class="disconnect" onclick="disconnect()">Disconnect</button>
+<h2>&#x1f4e1; 动态流（输入 RTSP URL 发起）</h2>
+<div class="row">
+  <input id="rtspUrl" placeholder="rtsp://admin:password@192.168.1.1:554/stream">
+  <button class="btn-blue" onclick="createStream()">创建并播放</button>
+  <button class="btn-red" onclick="disconnect()">断开</button>
 </div>
 
-<pre id="status" class="info">Not connected</pre>
+<h2>&#x2699; 配置流（config.toml 中预设）</h2>
+<div class="row">
+  <input id="configStream" placeholder="camera-1" value="camera-1">
+  <button class="btn-go" onclick="connectConfigured()">连接</button>
+</div>
+
 <video id="video" autoplay playsinline muted></video>
+<pre id="log"></pre>
+
+</div>
 
 <script>
-let pc, ws;
+let pc, ws, currentStreamId;
 
+function t() { return new Date().toLocaleTimeString(); }
 function log(msg, cls) {
-  const s = document.getElementById('status');
-  s.textContent += '\n' + new Date().toLocaleTimeString() + '  ' + msg;
-  s.className = cls || 'info';
+  const el = document.getElementById('log');
+  el.textContent += t() + '  ' + msg + '\n';
+  el.className = cls || '';
+  el.scrollTop = el.scrollHeight;
 }
 
-async function connect() {
-  log('Connecting to signaling...', 'info');
+async function createStream() {
+  disconnect();
+  const url = document.getElementById('rtspUrl').value.trim();
+  if (!url) return log('请输入 RTSP URL', 'log-err');
 
-  ws = new WebSocket(document.getElementById('gateway').value);
+  log('POST /api/streams …', 'log-dim');
+  try {
+    const res = await fetch('/api/streams', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+    if (!res.ok) return log('创建失败: ' + (data.message || res.status), 'log-err');
+    currentStreamId = data.stream_id;
+    log('流已创建: ' + currentStreamId, 'log-ok');
+    connect(currentStreamId);
+  } catch (e) {
+    log('请求失败: ' + e, 'log-err');
+  }
+}
+
+function connectConfigured() {
+  disconnect();
+  currentStreamId = document.getElementById('configStream').value.trim();
+  if (!currentStreamId) return log('请输入流 ID', 'log-err');
+  connect(currentStreamId);
+}
+
+function connect(streamId) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl = `${proto}://${location.host}/ws?stream=${streamId}`;
+  log('WebSocket 连接: ' + wsUrl, 'log-dim');
+
+  ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    log('WebSocket connected, requesting stream', 'ok');
+    log('已连接，请求流...', 'log-ok');
     ws.send(JSON.stringify({ type: 'request_stream' }));
   };
 
   ws.onmessage = async (event) => {
     const msg = JSON.parse(event.data);
-    log('← ' + msg.type, 'info');
+    log('← ' + msg.type, 'log-dim');
 
     switch (msg.type) {
       case 'connected':
-        log('Stream ready, creating peer connection', 'ok');
-        pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-        });
-
-        pc.ontrack = (event) => {
-          log('Remote track received: ' + event.track.kind, 'ok');
-          document.getElementById('video').srcObject = event.streams[0];
+        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        pc.ontrack = (e) => {
+          log('视频轨道就绪: ' + e.track.kind, 'log-ok');
+          document.getElementById('video').srcObject = e.streams[0];
         };
-
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-            const c = event.candidate;
-            ws.send(JSON.stringify({
-              type: 'ice_candidate',
-              candidate: c.candidate,
-              sdpMid: c.sdpMid
-            }));
-          }
+        pc.onicecandidate = (e) => {
+          if (e.candidate) ws.send(JSON.stringify({ type: 'ice_candidate', candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid }));
         };
-
-        pc.onconnectionstatechange = () => {
-          log('Connection state: ' + pc.connectionState, 'info');
-        };
+        pc.onconnectionstatechange = () => log('连接状态: ' + pc.connectionState, 'log-dim');
         break;
 
       case 'sdp_offer':
-        log('Received SDP offer', 'ok');
+        log('收到 SDP offer', 'log-ok');
         await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         ws.send(JSON.stringify({ type: 'sdp_answer', sdp: answer.sdp }));
-        log('SDP answer sent', 'ok');
         break;
 
       case 'ice_candidate':
-        if (msg.candidate && msg.candidate.candidate) {
-          try {
-            await pc.addIceCandidate(msg.candidate);
-          } catch (e) {
-            log('ICE error: ' + e, 'err');
-          }
+        if (msg.candidate?.candidate) {
+          try { await pc.addIceCandidate(msg.candidate); } catch (e) {}
         }
         break;
 
       case 'error':
-        log('Server error: ' + msg.message, 'err');
+        log('错误: ' + msg.message, 'log-err');
         break;
     }
   };
 
-  ws.onerror = () => log('WebSocket error', 'err');
-  ws.onclose = () => log('WebSocket closed', 'info');
+  ws.onerror = () => log('WebSocket 错误', 'log-err');
+  ws.onclose = () => log('WebSocket 断开', 'log-dim');
 }
 
 function disconnect() {
   if (pc) { pc.close(); pc = null; }
   if (ws) { ws.close(); ws = null; }
   document.getElementById('video').srcObject = null;
-  log('Disconnected', 'info');
+  log('已断开', 'log-dim');
 }
 </script>
 </body>

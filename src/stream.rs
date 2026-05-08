@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::info;
+use uuid::Uuid;
 
 pub type StreamId = String;
 
@@ -37,6 +38,7 @@ pub struct StreamSummary {
     pub id: String,
     pub subscribers: usize,
     pub connected: bool,
+    pub dynamic: bool,
 }
 
 /// Detailed info for a single stream.
@@ -71,6 +73,7 @@ impl StreamManager {
                 id: id.clone(),
                 subscribers: s.subscriber_count,
                 connected: s.subscriber_count > 0,
+                dynamic: s.config_id != *id,
             })
             .collect()
     }
@@ -165,6 +168,90 @@ impl StreamManager {
         self.total_peers.fetch_add(1, Ordering::Relaxed);
         info!("Stream {sid}: active with 1 subscriber");
         Ok((relay, codec_info, sid))
+    }
+
+    /// Create a dynamic stream (not from config). Starts RTSP pull immediately.
+    /// Returns the stream UUID that the client uses for WebSocket connect.
+    pub async fn create_dynamic(
+        self: &Arc<Self>,
+        rtsp_url: &str,
+    ) -> AppResult<String> {
+        let sid = Uuid::new_v4().to_string();
+        let relay = Arc::new(RtpRelay::new(256));
+        info!("Dynamic stream {sid}: starting RTSP pull for {rtsp_url}");
+
+        let relay_for_pull = Arc::clone(&relay);
+        let puller = RtspPuller::start(rtsp_url, relay_for_pull).await?;
+        let codec_info = puller.codec_info.clone();
+
+        let mut streams = self.streams.write().await;
+        streams.insert(
+            sid.clone(),
+            ActiveStream {
+                config_id: sid.clone(), // dynamic streams use UUID as their identity
+                relay,
+                codec_info,
+                subscriber_count: 0,
+                puller: Some(puller),
+                idle_timer: None,
+            },
+        );
+
+        info!("Dynamic stream {sid}: puller active, waiting for subscribers");
+        Ok(sid)
+    }
+
+    /// Subscribe to an existing stream (created dynamically or lazily).
+    /// Used when the stream already has an active RTSP pull.
+    pub async fn subscribe_existing(
+        self: &Arc<Self>,
+        stream_id: &str,
+        max_peers: usize,
+        max_per_stream: usize,
+    ) -> AppResult<(Arc<RtpRelay>, H264CodecInfo)> {
+        let current_total = self.total_peers.load(Ordering::Relaxed);
+        if current_total >= max_peers {
+            return Err(AppError::Other(format!(
+                "global peer limit reached ({max_peers})"
+            )));
+        }
+
+        let mut streams = self.streams.write().await;
+        let active = streams
+            .get_mut(stream_id)
+            .ok_or_else(|| AppError::Other(format!("stream '{stream_id}' not found")))?;
+
+        if active.subscriber_count >= max_per_stream {
+            return Err(AppError::Other(format!(
+                "stream limit reached ({max_per_stream})"
+            )));
+        }
+
+        if let Some(timer) = active.idle_timer.take() {
+            timer.abort();
+        }
+        active.subscriber_count += 1;
+        self.total_peers.fetch_add(1, Ordering::Relaxed);
+        info!(
+            "Stream {stream_id}: {} subscriber(s)",
+            active.subscriber_count
+        );
+        Ok((Arc::clone(&active.relay), active.codec_info.clone()))
+    }
+
+    /// Force-remove a dynamic stream (for DELETE API).
+    pub async fn remove_stream(&self, stream_id: &str) -> Result<(), String> {
+        let mut streams = self.streams.write().await;
+        if let Some(mut active) = streams.remove(stream_id) {
+            if let Some(timer) = active.idle_timer.take() {
+                timer.abort();
+            }
+            active.puller.take(); // drop → abort RTSP
+            info!("Stream {stream_id}: removed");
+            Ok(())
+        } else {
+            Err(format!("stream '{stream_id}' not found"))
+        }
     }
 
     /// Called when a browser disconnects.

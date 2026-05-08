@@ -1,8 +1,11 @@
 use crate::config::Config;
 use crate::stream::StreamManager;
 use axum::extract::{Path, State};
-use axum::Json;
-use serde::Serialize;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{Json, Router};
+use axum::routing::get;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -11,6 +14,13 @@ pub struct ApiState {
     pub stream_manager: Arc<StreamManager>,
     pub config: Config,
     pub start_time: Instant,
+}
+
+// ── Request types ──
+
+#[derive(Deserialize)]
+pub struct CreateStreamRequest {
+    pub url: String,
 }
 
 // ── Response types ──
@@ -28,8 +38,8 @@ pub struct HealthResponse {
 pub struct StreamItem {
     pub id: String,
     pub name: String,
-    /// Masked URL (credentials hidden)
     pub url: String,
+    pub dynamic: bool,
     pub subscribers: usize,
     pub connected: bool,
     pub codec: Option<String>,
@@ -39,6 +49,22 @@ pub struct StreamItem {
 #[derive(Serialize)]
 pub struct StreamsResponse {
     pub streams: Vec<StreamItem>,
+}
+
+#[derive(Serialize)]
+pub struct CreateStreamResponse {
+    pub stream_id: String,
+}
+
+// ── Router ──
+
+pub fn routes() -> Router<ApiState> {
+    Router::new()
+        .route("/health", get(health))
+        .route("/api/streams", get(list_streams))
+        .route("/api/streams", axum::routing::post(create_stream))
+        .route("/api/streams/{id}", get(stream_detail))
+        .route("/api/streams/{id}", axum::routing::delete(delete_stream))
 }
 
 // ── Handlers ──
@@ -57,8 +83,8 @@ pub async fn health(State(state): State<ApiState>) -> Json<HealthResponse> {
 pub async fn list_streams(State(state): State<ApiState>) -> Json<StreamsResponse> {
     let runtime = state.stream_manager.list_streams().await;
 
-    // Merge configured streams with runtime state
-    let items: Vec<StreamItem> = state
+    // Start with configured streams
+    let mut items: Vec<StreamItem> = state
         .config
         .streams
         .iter()
@@ -66,12 +92,9 @@ pub async fn list_streams(State(state): State<ApiState>) -> Json<StreamsResponse
             let rt = runtime.iter().find(|r| r.id == cfg.id);
             StreamItem {
                 id: cfg.id.clone(),
-                name: if cfg.name.is_empty() {
-                    cfg.id.clone()
-                } else {
-                    cfg.name.clone()
-                },
+                name: if cfg.name.is_empty() { cfg.id.clone() } else { cfg.name.clone() },
                 url: mask_url(&cfg.url),
+                dynamic: false,
                 subscribers: rt.map(|r| r.subscribers).unwrap_or(0),
                 connected: rt.map(|r| r.connected).unwrap_or(false),
                 codec: rt.and(Some("h264".to_string())),
@@ -80,6 +103,22 @@ pub async fn list_streams(State(state): State<ApiState>) -> Json<StreamsResponse
         })
         .collect();
 
+    // Add dynamic streams (not in config)
+    for rt in &runtime {
+        if !state.config.streams.iter().any(|cfg| cfg.id == rt.id) {
+            items.push(StreamItem {
+                id: rt.id.clone(),
+                name: format!("Dynamic ({})", &rt.id[..8]),
+                url: "".to_string(),
+                dynamic: true,
+                subscribers: rt.subscribers,
+                connected: rt.connected,
+                codec: Some("h264".to_string()),
+                payload_type: Some(96u8),
+            });
+        }
+    }
+
     Json(StreamsResponse { streams: items })
 }
 
@@ -87,27 +126,75 @@ pub async fn stream_detail(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<StreamItem>, String> {
-    let cfg = state
-        .config
-        .find_stream(&id)
-        .ok_or_else(|| "stream not found".to_string())?;
-
     let runtime = state.stream_manager.list_streams().await;
     let rt = runtime.iter().find(|r| r.id == id);
 
-    Ok(Json(StreamItem {
-        id: cfg.id.clone(),
-        name: if cfg.name.is_empty() {
-            cfg.id.clone()
-        } else {
-            cfg.name.clone()
-        },
-        url: mask_url(&cfg.url),
-        subscribers: rt.map(|r| r.subscribers).unwrap_or(0),
-        connected: rt.map(|r| r.connected).unwrap_or(false),
-        codec: rt.and(Some("h264".to_string())),
-        payload_type: rt.and(Some(96u8)),
-    }))
+    if let Some(cfg) = state.config.find_stream(&id) {
+        return Ok(Json(StreamItem {
+            id: cfg.id.clone(),
+            name: if cfg.name.is_empty() { cfg.id.clone() } else { cfg.name.clone() },
+            url: mask_url(&cfg.url),
+            dynamic: false,
+            subscribers: rt.map(|r| r.subscribers).unwrap_or(0),
+            connected: rt.map(|r| r.connected).unwrap_or(false),
+            codec: rt.and(Some("h264".to_string())),
+            payload_type: rt.and(Some(96u8)),
+        }));
+    }
+
+    if let Some(rt) = rt {
+        return Ok(Json(StreamItem {
+            id: rt.id.clone(),
+            name: format!("Dynamic ({})", &rt.id[..8]),
+            url: "".to_string(),
+            dynamic: true,
+            subscribers: rt.subscribers,
+            connected: rt.connected,
+            codec: Some("h264".to_string()),
+            payload_type: Some(96u8),
+        }));
+    }
+
+    Err("stream not found".to_string())
+}
+
+/// POST /api/streams — Create a dynamic stream from an RTSP URL.
+pub async fn create_stream(
+    State(state): State<ApiState>,
+    Json(req): Json<CreateStreamRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if req.url.is_empty() || !req.url.starts_with("rtsp://") {
+        return Err((StatusCode::BAD_REQUEST, "invalid RTSP URL".into()));
+    }
+
+    match state.stream_manager.create_dynamic(&req.url).await {
+        Ok(stream_id) => Ok((
+            StatusCode::CREATED,
+            Json(CreateStreamResponse { stream_id }),
+        )),
+        Err(e) => {
+            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))
+        }
+    }
+}
+
+/// DELETE /api/streams/:id — Stop a dynamic stream.
+pub async fn delete_stream(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Only allow deleting dynamic streams, not configured ones
+    if state.config.find_stream(&id).is_some() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cannot delete configured streams".into(),
+        ));
+    }
+
+    match state.stream_manager.remove_stream(&id).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(e) => Err((StatusCode::NOT_FOUND, e)),
+    }
 }
 
 fn mask_url(url: &str) -> String {
