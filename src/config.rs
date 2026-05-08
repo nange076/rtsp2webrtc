@@ -8,6 +8,10 @@ pub struct Config {
     pub streams: Vec<StreamConfig>,
     #[serde(default)]
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub cors: CorsConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
     pub tls: Option<TlsConfig>,
 }
 
@@ -34,6 +38,21 @@ pub struct LimitsConfig {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct CorsConfig {
+    /// Allowed origins. Empty = restrictive (same-origin only).
+    /// Use `["*"]` to allow all origins.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct LoggingConfig {
+    /// `"text"` or `"json"`.
+    #[serde(default = "default_log_format")]
+    pub format: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct TlsConfig {
     pub cert: PathBuf,
     pub key: PathBuf,
@@ -53,11 +72,31 @@ fn default_max_per_stream() -> usize {
     20
 }
 
+fn default_log_format() -> String {
+    "text".into()
+}
+
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             max_peers: default_max_peers(),
             max_per_stream: default_max_per_stream(),
+        }
+    }
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            allowed_origins: vec![],
+        }
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            format: default_log_format(),
         }
     }
 }

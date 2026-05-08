@@ -16,7 +16,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
@@ -36,14 +36,27 @@ struct WsParams {
 
 #[tokio::main]
 async fn main() -> AppResult<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rtsp2webrtc=info".into()),
-        )
-        .init();
-
     let config = Config::load();
+
+    // ── logging setup ──
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "rtsp2webrtc=info".into());
+
+    match config.logging.format.as_str() {
+        "json" => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(env_filter)
+                .with_current_span(false)
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
+    }
+
     let start_time = Instant::now();
 
     info!(
@@ -62,6 +75,24 @@ async fn main() -> AppResult<()> {
         start_time,
     };
 
+    // ── CORS ──
+    let cors = if config.cors.allowed_origins.iter().any(|o| o == "*") {
+        CorsLayer::permissive()
+    } else if config.cors.allowed_origins.is_empty() {
+        CorsLayer::new() // restrictive: same-origin only
+    } else {
+        let origins: Vec<_> = config
+            .cors
+            .allowed_origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(tower_http::cors::AllowOrigin::list(origins))
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any)
+    };
+
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .with_state(AppState {
@@ -77,7 +108,7 @@ async fn main() -> AppResult<()> {
                 .with_state(api_state),
         )
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
+        .layer(cors);
 
     let bind_addr = config.server.bind_addr;
 
@@ -94,8 +125,8 @@ async fn main() -> AppResult<()> {
                 let h = handle.clone();
                 async move {
                     tokio::signal::ctrl_c().await.ok();
-                    info!("Shutting down...");
-                    h.shutdown();
+                    info!("Shutting down (grace period 5s)...");
+                    h.graceful_shutdown(Some(Duration::from_secs(5)));
                 }
             });
             axum_server::bind_rustls(bind_addr, tls_config)
@@ -109,7 +140,8 @@ async fn main() -> AppResult<()> {
             axum::serve(listener, app)
                 .with_graceful_shutdown(async {
                     tokio::signal::ctrl_c().await.ok();
-                    info!("Shutting down...");
+                    info!("Shutting down (grace period 5s)...");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 })
                 .await?;
         }
@@ -123,7 +155,6 @@ async fn ws_handler(
     State(state): State<AppState>,
     Query(params): Query<WsParams>,
 ) -> impl IntoResponse {
-    // Resolve stream ID from query param or use default
     let stream_id = params
         .stream
         .unwrap_or_else(|| state.config.default_stream_id().to_string());
@@ -139,38 +170,48 @@ async fn ws_handler(
     };
 
     ws.on_upgrade(move |socket| async move {
-        match state
-            .stream_manager
-            .subscribe(
-                &stream_id,
-                &stream_config.url,
-                state.config.limits.max_peers,
-                state.config.limits.max_per_stream,
-            )
-            .await
-        {
-            Ok((relay, codec_info, sid)) => {
-                if let Err(e) = signaling::handle_signaling(
-                    socket,
-                    relay,
-                    codec_info,
-                    sid,
-                    state.stream_manager,
+        // Panic isolation: catch panics in the signaling task so one
+        // peer crash does not bring down the whole server.
+        let result = tokio::task::spawn(async move {
+            match state
+                .stream_manager
+                .subscribe(
+                    &stream_id,
+                    &stream_config.url,
+                    state.config.limits.max_peers,
+                    state.config.limits.max_per_stream,
                 )
                 .await
-                {
-                    error!("Signaling error: {e}");
+            {
+                Ok((relay, codec_info, sid)) => {
+                    if let Err(e) = signaling::handle_signaling(
+                        socket,
+                        relay,
+                        codec_info,
+                        sid,
+                        state.stream_manager,
+                    )
+                    .await
+                    {
+                        error!("Signaling error: {e}");
+                    }
+                }
+                Err(e) => {
+                    warn!("Subscription rejected: {e}");
                 }
             }
-            Err(e) => {
-                warn!("Subscription rejected: {e}");
+        })
+        .await;
+
+        if let Err(join_err) = result {
+            if join_err.is_panic() {
+                error!("WebSocket handler panicked: {join_err}");
             }
         }
     })
 }
 
 fn mask_url(url: &str) -> String {
-    // Show only scheme + host, mask credentials and path
     if let Ok(u) = url::Url::parse(url) {
         let mut masked = format!("{}://", u.scheme());
         if u.username().is_empty() {
