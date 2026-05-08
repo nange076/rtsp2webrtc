@@ -26,6 +26,11 @@
 <body>
 <div class="panel">
 
+<div class="row">
+  <label style="white-space:nowrap">网关地址:</label>
+  <input id="gateway" value="http://localhost:3000" style="max-width:260px">
+</div>
+
 <h2>&#x1f4e1; 动态流（输入 RTSP URL 发起）</h2>
 <div class="row">
   <input id="rtspUrl" placeholder="rtsp://admin:password@192.168.1.1:554/stream">
@@ -47,6 +52,13 @@
 <script>
 let pc, ws, currentStreamId;
 
+function baseUrl() {
+  return document.getElementById('gateway').value.replace(/\/$/, '');
+}
+function wsBase() {
+  return baseUrl().replace(/^http/, 'ws');
+}
+
 function t() { return new Date().toLocaleTimeString(); }
 function log(msg, cls) {
   const el = document.getElementById('log');
@@ -60,9 +72,9 @@ async function createStream() {
   const url = document.getElementById('rtspUrl').value.trim();
   if (!url) return log('请输入 RTSP URL', 'log-err');
 
-  log('POST /api/streams …', 'log-dim');
+  log('POST ' + baseUrl() + '/api/streams …', 'log-dim');
   try {
-    const res = await fetch('/api/streams', {
+    const res = await fetch(baseUrl() + '/api/streams', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
@@ -85,8 +97,7 @@ function connectConfigured() {
 }
 
 function connect(streamId) {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const wsUrl = `${proto}://${location.host}/ws?stream=${streamId}`;
+  const wsUrl = `${wsBase()}/ws?stream=${streamId}`;
   log('WebSocket 连接: ' + wsUrl, 'log-dim');
 
   ws = new WebSocket(wsUrl);
