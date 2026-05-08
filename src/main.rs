@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, info_span};
 
 #[derive(Clone)]
 struct AppState {
@@ -170,6 +170,10 @@ async fn ws_handler(
     let is_dynamic = state.config.find_stream(&stream_id).is_none();
 
     ws.on_upgrade(move |socket| async move {
+        let span = info_span!("ws", stream_id = %stream_id);
+        let _guard = span.enter();
+        info!("WebSocket connection established");
+
         let result = tokio::task::spawn(async move {
             let sub_result = if is_dynamic {
                 // Dynamic stream — must already exist via POST /api/streams
