@@ -2813,8 +2813,6 @@ dependencies = [
 [[package]]
 name = "webrtc-dtls"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7c9b89fc909f9da0499283b1112cd98f72fec28e55a54a9e352525ca65cd95c"
 dependencies = [
  "aes",
  "aes-gcm",

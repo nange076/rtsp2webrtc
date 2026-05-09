@@ -54,6 +54,16 @@
 <script>
 let pc, ws, currentStreamId;
 
+// ── ICE candidate queue (populated before remote desc is set) ──
+let pendingCandidates = [];
+let remoteDescReady = false;
+
+// ── Serialized message processing ──
+// WebSocket onmessage is async; without a queue, concurrent fires can cause
+// ice_candidate to be processed before setRemoteDescription completes.
+// On localhost the round-trip is ~0 ms so this race is very easy to hit.
+let msgQueue = Promise.resolve();
+
 function baseUrl() {
   return document.getElementById('gateway').value.replace(/\/$/, '');
 }
@@ -65,7 +75,8 @@ function t() { return new Date().toLocaleTimeString(); }
 function log(msg, cls) {
   const el = document.getElementById('log');
   el.textContent += t() + '  ' + msg + '\n';
-  el.className = cls || '';
+  if (cls) el.style.color = cls === 'log-err' ? '#f44336' : cls === 'log-ok' ? '#4caf50' : '#888';
+  else el.style.color = '';
   el.scrollTop = el.scrollHeight;
 }
 
@@ -98,10 +109,86 @@ function connectConfigured() {
   connect(currentStreamId);
 }
 
+async function handleMessage(data) {
+  const msg = JSON.parse(data);
+  log('← ' + msg.type, 'log-dim');
+
+  switch (msg.type) {
+    case 'connected':
+      remoteDescReady = false;
+      pendingCandidates = [];
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      pc.ontrack = (e) => {
+        log('视频轨道就绪: ' + e.track.kind, 'log-ok');
+        document.getElementById('video').srcObject = e.streams[0];
+      };
+      pc.onicecandidate = (e) => {
+        if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'ice_candidate',
+            candidate: e.candidate.candidate,
+            sdpMid: e.candidate.sdpMid
+          }));
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        log('连接状态: ' + pc.connectionState,
+          pc.connectionState === 'connected' ? 'log-ok' :
+          pc.connectionState === 'failed' ? 'log-err' : 'log-dim');
+      };
+      pc.oniceconnectionstatechange = () => {
+        log('ICE 状态: ' + pc.iceConnectionState, 'log-dim');
+      };
+      break;
+
+    case 'sdp_offer':
+      log('收到 SDP offer，设置远端描述…', 'log-ok');
+      await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: 'sdp_answer', sdp: answer.sdp }));
+      log('Answer 已发送', 'log-dim');
+
+      // Remote desc is now in place — flush any queued ICE candidates
+      remoteDescReady = true;
+      for (const c of pendingCandidates) {
+        try { await pc.addIceCandidate(c); }
+        catch (e) { log('addIceCandidate(queued) 失败: ' + e, 'log-err'); }
+      }
+      pendingCandidates = [];
+      break;
+
+    case 'ice_candidate':
+      // Build a proper RTCIceCandidateInit from whatever shape the server sends
+      const init = msg.candidate && typeof msg.candidate === 'object'
+        ? msg.candidate                                      // already an object
+        : { candidate: msg.candidate, sdpMid: msg.sdpMid }; // flat fields
+
+      if (!init?.candidate) break;
+
+      if (remoteDescReady) {
+        try { await pc.addIceCandidate(init); }
+        catch (e) { log('addIceCandidate 失败: ' + e, 'log-err'); }
+      } else {
+        // Remote description not set yet — queue for later
+        pendingCandidates.push(init);
+        log('ICE candidate 暂存 (' + pendingCandidates.length + ')', 'log-dim');
+      }
+      break;
+
+    case 'error':
+      log('错误: ' + msg.message, 'log-err');
+      break;
+  }
+}
+
 function connect(streamId) {
   const wsUrl = `${wsBase()}/ws?stream=${streamId}`;
   log('WebSocket 连接: ' + wsUrl, 'log-dim');
 
+  msgQueue = Promise.resolve();   // reset queue on new connection
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
@@ -109,50 +196,23 @@ function connect(streamId) {
     ws.send(JSON.stringify({ type: 'request_stream' }));
   };
 
-  ws.onmessage = async (event) => {
-    const msg = JSON.parse(event.data);
-    log('← ' + msg.type, 'log-dim');
-
-    switch (msg.type) {
-      case 'connected':
-        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-        pc.ontrack = (e) => {
-          log('视频轨道就绪: ' + e.track.kind, 'log-ok');
-          document.getElementById('video').srcObject = e.streams[0];
-        };
-        pc.onicecandidate = (e) => {
-          if (e.candidate) ws.send(JSON.stringify({ type: 'ice_candidate', candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid }));
-        };
-        pc.onconnectionstatechange = () => log('连接状态: ' + pc.connectionState, 'log-dim');
-        break;
-
-      case 'sdp_offer':
-        log('收到 SDP offer', 'log-ok');
-        await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        ws.send(JSON.stringify({ type: 'sdp_answer', sdp: answer.sdp }));
-        break;
-
-      case 'ice_candidate':
-        if (msg.candidate?.candidate) {
-          try { await pc.addIceCandidate(msg.candidate); } catch (e) {}
-        }
-        break;
-
-      case 'error':
-        log('错误: ' + msg.message, 'log-err');
-        break;
-    }
+  // Serialize processing: each message is chained onto the previous promise,
+  // so ice_candidate never runs concurrently with the sdp_offer handler.
+  ws.onmessage = (event) => {
+    msgQueue = msgQueue.then(() => handleMessage(event.data)).catch(e => {
+      log('消息处理异常: ' + e, 'log-err');
+    });
   };
 
   ws.onerror = () => log('WebSocket 错误', 'log-err');
-  ws.onclose = () => log('WebSocket 断开', 'log-dim');
+  ws.onclose = (e) => log(`WebSocket 断开 (code=${e.code})`, 'log-dim');
 }
 
 function disconnect() {
   if (pc) { pc.close(); pc = null; }
   if (ws) { ws.close(); ws = null; }
+  remoteDescReady = false;
+  pendingCandidates = [];
   document.getElementById('video').srcObject = null;
   log('已断开', 'log-dim');
 }

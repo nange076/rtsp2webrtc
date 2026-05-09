@@ -25,3 +25,7 @@ url = "2"
 base64 = "0.22"
 toml = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+
+[patch.crates-io]
+webrtc-dtls = { path = "patches/webrtc-dtls" }
+
