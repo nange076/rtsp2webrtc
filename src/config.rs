@@ -5,7 +5,6 @@ use std::path::PathBuf;
 #[derive(Deserialize, Clone, Debug)]
 pub struct Config {
     pub server: ServerConfig,
-    pub streams: Vec<StreamConfig>,
     #[serde(default)]
     pub limits: LimitsConfig,
     #[serde(default)]
@@ -23,14 +22,6 @@ pub struct ServerConfig {
     /// connections require `Authorization: Bearer <key>` or `?key=<key>`.
     #[serde(default)]
     pub api_key: String,
-}
-
-#[derive(Deserialize, Clone, Debug)]
-pub struct StreamConfig {
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    pub url: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -123,13 +114,4 @@ impl Config {
             .unwrap_or_else(|e| panic!("invalid config file {path}: {e}"))
     }
 
-    /// Look up a stream config by ID.
-    pub fn find_stream(&self, id: &str) -> Option<&StreamConfig> {
-        self.streams.iter().find(|s| s.id == id)
-    }
-
-    /// Default stream ID (first configured stream).
-    pub fn default_stream_id(&self) -> &str {
-        &self.streams.first().expect("no streams in config").id
-    }
 }

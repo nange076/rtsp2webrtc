@@ -14,7 +14,7 @@ pub type StreamId = String;
 
 /// Holds all runtime objects for an active RTSP stream.
 struct ActiveStream {
-    config_id: String, // matches StreamConfig.id
+    url: String,
     relay: Arc<RtpRelay>,
     codec_info: H264CodecInfo,
     subscriber_count: usize,
@@ -25,7 +25,8 @@ struct ActiveStream {
 /// Central registry for all active RTSP streams.
 ///
 /// Ensures one RTSP source → N WebRTC consumers.
-/// Starts RTSP pull lazily on first subscriber.
+/// Starts RTSP pull when stream is created via the API.
+/// Reuses existing pull if the same RTSP URL is requested.
 /// Stops pull after idle timeout when last subscriber leaves.
 pub struct StreamManager {
     streams: RwLock<HashMap<StreamId, ActiveStream>>,
@@ -38,7 +39,7 @@ pub struct StreamSummary {
     pub id: String,
     pub subscribers: usize,
     pub connected: bool,
-    pub dynamic: bool,
+    pub url: String,
 }
 
 /// Detailed info for a single stream.
@@ -49,6 +50,7 @@ pub struct StreamDetail {
     pub connected: bool,
     pub codec: String,
     pub payload_type: u8,
+    pub url: String,
 }
 
 impl StreamManager {
@@ -73,7 +75,7 @@ impl StreamManager {
                 id: id.clone(),
                 subscribers: s.subscriber_count,
                 connected: s.subscriber_count > 0,
-                dynamic: s.config_id != *id,
+                url: s.url.clone(),
             })
             .collect()
     }
@@ -87,95 +89,25 @@ impl StreamManager {
             connected: s.subscriber_count > 0,
             codec: "h264".to_string(),
             payload_type: s.codec_info.payload_type,
+            url: s.url.clone(),
         })
     }
 
-    /// Get or create a stream. On first call starts the RTSP puller.
-    /// Checks connection limits before adding a subscriber.
-    pub async fn subscribe(
-        self: &Arc<Self>,
-        stream_id: &str,
-        rtsp_url: &str,
-        max_peers: usize,
-        max_per_stream: usize,
-    ) -> AppResult<(Arc<RtpRelay>, H264CodecInfo, StreamId)> {
-        // Check global peer limit
-        let current_total = self.total_peers.load(Ordering::Relaxed);
-        if current_total >= max_peers {
-            return Err(AppError::Other(format!(
-                "global peer limit reached ({max_peers})"
-            )));
-        }
-
-        // Check if this stream (by config ID) is already active
-        let existing = {
-            let streams = self.streams.read().await;
-            streams
-                .iter()
-                .find(|(_, s)| s.config_id == stream_id && s.subscriber_count > 0)
-                .map(|(id, _)| id.clone())
-        };
-
-        if let Some(ref sid) = existing {
-            let mut streams = self.streams.write().await;
-            if let Some(active) = streams.get_mut(sid) {
-                if active.subscriber_count >= max_per_stream {
-                    return Err(AppError::Other(format!(
-                        "stream limit reached ({max_per_stream})"
-                    )));
-                }
-                // Cancel idle timer
-                if let Some(timer) = active.idle_timer.take() {
-                    timer.abort();
-                    info!("Stream {sid}: cancelled idle timer");
-                }
-                active.subscriber_count += 1;
-                self.total_peers.fetch_add(1, Ordering::Relaxed);
-                info!("Stream {sid}: {} subscriber(s)", active.subscriber_count);
-                return Ok((
-                    Arc::clone(&active.relay),
-                    active.codec_info.clone(),
-                    sid.clone(),
-                ));
-            }
-        }
-
-        // No active stream — create one and start RTSP pull
-        let sid = stream_id.to_string();
-        let relay = Arc::new(RtpRelay::new(256));
-
-        info!("Stream {sid}: starting RTSP pull for {rtsp_url}");
-
-        let relay_for_pull = Arc::clone(&relay);
-        let puller = RtspPuller::start(rtsp_url, relay_for_pull).await?;
-        let codec_info = puller.codec_info.clone();
-
-        {
-            let mut streams = self.streams.write().await;
-            streams.insert(
-                sid.clone(),
-                ActiveStream {
-                    config_id: sid.clone(),
-                    relay: Arc::clone(&relay),
-                    codec_info: codec_info.clone(),
-                    subscriber_count: 1,
-                    puller: Some(puller),
-                    idle_timer: None,
-                },
-            );
-        }
-
-        self.total_peers.fetch_add(1, Ordering::Relaxed);
-        info!("Stream {sid}: active with 1 subscriber");
-        Ok((relay, codec_info, sid))
-    }
-
-    /// Create a dynamic stream (not from config). Starts RTSP pull immediately.
-    /// Returns the stream UUID that the client uses for WebSocket connect.
+    /// Create a dynamic stream from an RTSP URL. Starts RTSP pull immediately.
+    /// If a stream for the same URL already exists, returns its ID (reuse).
     pub async fn create_dynamic(
         self: &Arc<Self>,
         rtsp_url: &str,
     ) -> AppResult<String> {
+        // Check if a stream for this URL already exists
+        {
+            let streams = self.streams.read().await;
+            if let Some((id, _)) = streams.iter().find(|(_, s)| s.url == rtsp_url) {
+                info!("Stream {id}: reusing existing RTSP pull for {rtsp_url}");
+                return Ok(id.clone());
+            }
+        }
+
         let sid = Uuid::new_v4().to_string();
         let relay = Arc::new(RtpRelay::new(256));
         info!("Dynamic stream {sid}: starting RTSP pull for {rtsp_url}");
@@ -188,7 +120,7 @@ impl StreamManager {
         streams.insert(
             sid.clone(),
             ActiveStream {
-                config_id: sid.clone(), // dynamic streams use UUID as their identity
+                url: rtsp_url.to_string(),
                 relay,
                 codec_info,
                 subscriber_count: 0,
@@ -201,7 +133,7 @@ impl StreamManager {
         Ok(sid)
     }
 
-    /// Subscribe to an existing stream (created dynamically or lazily).
+    /// Subscribe to an existing stream (created dynamically).
     /// Used when the stream already has an active RTSP pull.
     pub async fn subscribe_existing(
         self: &Arc<Self>,

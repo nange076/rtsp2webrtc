@@ -38,17 +38,11 @@
   <input id="gateway" value="http://localhost:3000" style="max-width:260px">
 </div>
 
-<h2>&#x1f4e1; 动态流（输入 RTSP URL 发起）</h2>
+<h2>&#x1f4e1; RTSP 流</h2>
 <div class="row">
   <input id="rtspUrl" placeholder="rtsp://admin:password@192.168.1.1:554/stream">
   <button class="btn-blue" onclick="createStream()">创建并播放</button>
   <button class="btn-red" onclick="disconnect()">断开</button>
-</div>
-
-<h2>&#x2699; 配置流（config.toml 中预设）</h2>
-<div class="row">
-  <input id="configStream" placeholder="camera-1" value="camera-1">
-  <button class="btn-go" onclick="connectConfigured()">连接</button>
 </div>
 
 <div id="streamList" style="margin:8px 0;font-size:13px"></div>
@@ -211,13 +205,6 @@ async function createStream() {
   } catch (e) {
     log('请求失败: ' + e, 'log-err');
   }
-}
-
-function connectConfigured() {
-  disconnect();
-  currentStreamId = document.getElementById('configStream').value.trim();
-  if (!currentStreamId) return log('请输入流 ID', 'log-err');
-  connect(currentStreamId);
 }
 
 async function handleMessage(data) {

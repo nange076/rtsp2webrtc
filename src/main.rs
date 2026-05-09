@@ -30,7 +30,6 @@ struct AppState {
 
 #[derive(serde::Deserialize)]
 struct WsParams {
-    #[serde(default)]
     stream: Option<String>,
     #[serde(default)]
     key: Option<String>,
@@ -65,9 +64,6 @@ async fn main() -> AppResult<()> {
         "Starting RTSP → WebRTC gateway on {}",
         config.server.bind_addr
     );
-    for s in &config.streams {
-        info!("  stream '{}' ({}) → {}", s.id, s.name, mask_url(&s.url));
-    }
 
     let stream_manager = Arc::new(StreamManager::new());
 
@@ -152,9 +148,12 @@ async fn ws_handler(
     State(state): State<AppState>,
     Query(params): Query<WsParams>,
 ) -> impl IntoResponse {
-    let stream_id = params
-        .stream
-        .unwrap_or_else(|| state.config.default_stream_id().to_string());
+    let Some(stream_id) = params.stream else {
+        return axum::response::Response::builder()
+            .status(400)
+            .body("missing 'stream' query parameter".into())
+            .unwrap();
+    };
 
     // Auth check (if api_key is configured)
     if !state.config.server.api_key.is_empty() {
@@ -166,39 +165,21 @@ async fn ws_handler(
         }
     }
 
-    // Determine if this is a configured or dynamic stream
-    let is_dynamic = state.config.find_stream(&stream_id).is_none();
-
     ws.on_upgrade(move |socket| async move {
         let span = info_span!("ws", stream_id = %stream_id);
         let _guard = span.enter();
         info!("WebSocket connection established");
 
         let result = tokio::task::spawn(async move {
-            let sub_result = if is_dynamic {
-                // Dynamic stream — must already exist via POST /api/streams
-                state
-                    .stream_manager
-                    .subscribe_existing(
-                        &stream_id,
-                        state.config.limits.max_peers,
-                        state.config.limits.max_per_stream,
-                    )
-                    .await
-                    .map(|(relay, codec_info)| (relay, codec_info, stream_id.clone()))
-            } else {
-                // Configured stream — lazy start via subscribe
-                let cfg = state.config.find_stream(&stream_id).unwrap();
-                state
-                    .stream_manager
-                    .subscribe(
-                        &stream_id,
-                        &cfg.url,
-                        state.config.limits.max_peers,
-                        state.config.limits.max_per_stream,
-                    )
-                    .await
-            };
+            let sub_result = state
+                .stream_manager
+                .subscribe_existing(
+                    &stream_id,
+                    state.config.limits.max_peers,
+                    state.config.limits.max_per_stream,
+                )
+                .await
+                .map(|(relay, codec_info)| (relay, codec_info, stream_id.clone()));
 
             match sub_result {
                 Ok((relay, codec_info, sid)) => {
@@ -227,19 +208,4 @@ async fn ws_handler(
             }
         }
     })
-}
-
-fn mask_url(url: &str) -> String {
-    if let Ok(u) = url::Url::parse(url) {
-        let mut masked = format!("{}://", u.scheme());
-        if u.username().is_empty() {
-            masked.push_str(u.host_str().unwrap_or("?"));
-        } else {
-            masked.push_str(&format!("***@{}", u.host_str().unwrap_or("?")));
-        }
-        masked.push_str(&format!(":{}", u.port().unwrap_or(554)));
-        masked
-    } else {
-        url.to_string()
-    }
 }

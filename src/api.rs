@@ -77,7 +77,7 @@ pub async fn health(State(state): State<ApiState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         uptime_secs: state.start_time.elapsed().as_secs(),
-        configured_streams: state.config.streams.len(),
+        configured_streams: 0,
         active_streams: active.iter().filter(|s| s.connected).count(),
         total_peers: state.stream_manager.total_peers(),
     })
@@ -86,41 +86,19 @@ pub async fn health(State(state): State<ApiState>) -> Json<HealthResponse> {
 pub async fn list_streams(State(state): State<ApiState>) -> Json<StreamsResponse> {
     let runtime = state.stream_manager.list_streams().await;
 
-    // Start with configured streams
-    let mut items: Vec<StreamItem> = state
-        .config
-        .streams
+    let items: Vec<StreamItem> = runtime
         .iter()
-        .map(|cfg| {
-            let rt = runtime.iter().find(|r| r.id == cfg.id);
-            StreamItem {
-                id: cfg.id.clone(),
-                name: if cfg.name.is_empty() { cfg.id.clone() } else { cfg.name.clone() },
-                url: mask_url(&cfg.url),
-                dynamic: false,
-                subscribers: rt.map(|r| r.subscribers).unwrap_or(0),
-                connected: rt.map(|r| r.connected).unwrap_or(false),
-                codec: rt.and(Some("h264".to_string())),
-                payload_type: rt.and(Some(96u8)),
-            }
+        .map(|rt| StreamItem {
+            id: rt.id.clone(),
+            name: format!("Dynamic ({})", &rt.id[..8]),
+            url: mask_url(&rt.url),
+            dynamic: true,
+            subscribers: rt.subscribers,
+            connected: rt.connected,
+            codec: Some("h264".to_string()),
+            payload_type: Some(96u8),
         })
         .collect();
-
-    // Add dynamic streams (not in config)
-    for rt in &runtime {
-        if !state.config.streams.iter().any(|cfg| cfg.id == rt.id) {
-            items.push(StreamItem {
-                id: rt.id.clone(),
-                name: format!("Dynamic ({})", &rt.id[..8]),
-                url: "".to_string(),
-                dynamic: true,
-                subscribers: rt.subscribers,
-                connected: rt.connected,
-                codec: Some("h264".to_string()),
-                payload_type: Some(96u8),
-            });
-        }
-    }
 
     Json(StreamsResponse { streams: items })
 }
@@ -130,26 +108,12 @@ pub async fn stream_detail(
     Path(id): Path<String>,
 ) -> Result<Json<StreamItem>, String> {
     let runtime = state.stream_manager.list_streams().await;
-    let rt = runtime.iter().find(|r| r.id == id);
 
-    if let Some(cfg) = state.config.find_stream(&id) {
-        return Ok(Json(StreamItem {
-            id: cfg.id.clone(),
-            name: if cfg.name.is_empty() { cfg.id.clone() } else { cfg.name.clone() },
-            url: mask_url(&cfg.url),
-            dynamic: false,
-            subscribers: rt.map(|r| r.subscribers).unwrap_or(0),
-            connected: rt.map(|r| r.connected).unwrap_or(false),
-            codec: rt.and(Some("h264".to_string())),
-            payload_type: rt.and(Some(96u8)),
-        }));
-    }
-
-    if let Some(rt) = rt {
+    if let Some(rt) = runtime.iter().find(|r| r.id == id) {
         return Ok(Json(StreamItem {
             id: rt.id.clone(),
             name: format!("Dynamic ({})", &rt.id[..8]),
-            url: "".to_string(),
+            url: mask_url(&rt.url),
             dynamic: true,
             subscribers: rt.subscribers,
             connected: rt.connected,
@@ -205,13 +169,6 @@ pub async fn delete_stream(
 ) -> Result<StatusCode, (StatusCode, String)> {
     check_auth(&state.config.server.api_key, &headers)?;
 
-    if state.config.find_stream(&id).is_some() {
-        return Err((
-            StatusCode::FORBIDDEN,
-            "cannot delete configured streams".into(),
-        ));
-    }
-
     match state.stream_manager.remove_stream(&id).await {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err((StatusCode::NOT_FOUND, e)),
@@ -237,12 +194,11 @@ pub async fn metrics(State(state): State<ApiState>) -> String {
          rtsp2webrtc_total_peers {peers}\n\
          # HELP rtsp2webrtc_configured_streams Configured streams\n\
          # TYPE rtsp2webrtc_configured_streams gauge\n\
-         rtsp2webrtc_configured_streams {}\n\
+         rtsp2webrtc_configured_streams 0\n\
          # HELP rtsp2webrtc_dynamic_streams Dynamic streams\n\
          # TYPE rtsp2webrtc_dynamic_streams gauge\n\
          rtsp2webrtc_dynamic_streams {}\n",
-        state.config.streams.len(),
-        active.iter().filter(|s| s.dynamic).count(),
+        active.len(),
     )
 }
 
