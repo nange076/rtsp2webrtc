@@ -84,11 +84,6 @@ Create `config.toml` (or override via `CONFIG_PATH` env var):
 bind_addr = "0.0.0.0:3000"
 # api_key = "changeme"
 
-[[streams]]
-id = "camera-1"
-name = "Front Door"
-url = "rtsp://admin:password@192.168.1.100:554/stream"
-
 [limits]
 max_peers = 50
 max_per_stream = 20
@@ -116,16 +111,6 @@ Open `web/index.html`, verify the gateway URL is `http://localhost:3000`, then c
 ---
 
 ## Usage
-
-### Option A: Configured Streams (server-side preset)
-
-Pre-configure RTSP streams in `config.toml`. Clients connect by stream ID:
-
-```
-ws://localhost:3000/ws?stream=camera-1
-```
-
-### Option B: Dynamic Streams (client-driven)
 
 Client submits an RTSP URL; the server spins up the relay on demand:
 
@@ -157,7 +142,7 @@ GET /health
 {
   "status": "ok",
   "uptime_secs": 3600,
-  "configured_streams": 2,
+  "configured_streams": 0,
   "active_streams": 1,
   "total_peers": 3
 }
@@ -173,10 +158,10 @@ GET /api/streams
 {
   "streams": [
     {
-      "id": "camera-1",
-      "name": "Front Door",
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "Dynamic (a1b2c3d4)",
       "url": "rtsp://***@192.168.1.100:554",
-      "dynamic": false,
+      "dynamic": true,
       "subscribers": 2,
       "connected": true,
       "codec": "h264",
@@ -203,7 +188,7 @@ Content-Type: application/json
 ### Stream Detail
 
 ```http
-GET /api/streams/camera-1
+GET /api/streams/a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
 ### Delete Dynamic Stream
@@ -246,10 +231,10 @@ GET /metrics
 
 | Parameter | Required | Description |
 |-----------|:--------:|-------------|
-| `stream` | No | Stream ID. Defaults to first configured stream. |
+| `stream` | Yes | Stream ID (UUID, returned by POST /api/streams) |
 | `key` | No | API key (required if `api_key` is configured on the server). |
 
-Example: `ws://localhost:3000/ws?stream=camera-1&key=changeme`
+Example: `ws://localhost:3000/ws?stream=a1b2c3d4-e5f6-7890-abcd-ef1234567890&key=changeme`
 
 ---
 
@@ -275,9 +260,6 @@ RTSP Camera ──→ RtspPuller ──→ RtpRelay (broadcast) ──┬──�
 |------|------|------|------|
 | `server.bind_addr` | string | `0.0.0.0:3000` | HTTP/WS listen address |
 | `server.api_key` | string | (empty) | API auth key; disabled if empty |
-| `streams[].id` | string | — | Unique stream identifier |
-| `streams[].name` | string | — | Display name |
-| `streams[].url` | string | — | RTSP URL (with credentials) |
 | `limits.max_peers` | int | 50 | Global max WebRTC connections |
 | `limits.max_per_stream` | int | 20 | Max viewers per stream |
 | `limits.create_per_min` | int | 0 | Max dynamic stream creates/min, 0=unlimited |
